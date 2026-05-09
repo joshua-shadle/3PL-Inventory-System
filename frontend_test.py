@@ -45,3 +45,4 @@ def test_reports_buttons_exist():
     assert "Low Stock Report" in labels
 
     app.destroy()
+

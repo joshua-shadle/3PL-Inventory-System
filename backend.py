@@ -176,6 +176,8 @@ class OrderManager:
 
 
 class OrderItemManager:
+    def fetch_by_order(self, order_id):
+        return session.query(OrderItem).filter_by(order_id=order_id).all()
 
     def add(self, order_id, product_id, quantity):
         new_item = OrderItem(order_id=order_id, product_id=product_id, quantity=quantity)
