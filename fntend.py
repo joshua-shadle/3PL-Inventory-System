@@ -56,39 +56,83 @@ class AddItemWindow(tk.Toplevel):
         self.controller = controller
         self.order_id = order_id
 
-        self.title("Add Item to Order")
-        self.geometry("450x350")
+        self.title(f"Add Item to Order #{order_id}")
+        self.geometry("350x250")
         self.configure(bg=CONTENT_BG)
 
-        tk.Label(self, text=f"Add Item to Order #{order_id}", font=("Segoe UI", 14), bg=CONTENT_BG).pack(pady=10)
+        tk.Label(self, text="Add Item to Order", font=("Segoe UI", 14), bg=CONTENT_BG).pack(pady=10)
 
         form = tk.Frame(self, bg=CONTENT_BG)
         form.pack(pady=10)
 
-        tk.Label(form, text="Product ID:", bg=CONTENT_BG).grid(row=0, column=0, sticky="e", padx=5, pady=5)
-        self.product_entry = tk.Entry(form, width=30)
-        self.product_entry.grid(row=0, column=1, padx=5, pady=5)
+        tk.Label(form, text="Product ID:", bg=CONTENT_BG).grid(row=0, column=0, sticky="w", pady=5)
+        self.product_entry = tk.Entry(form, width=20)
+        self.product_entry.grid(row=0, column=1, pady=5)
 
-        tk.Label(form, text="Quantity:", bg=CONTENT_BG).grid(row=1, column=0, sticky="e", padx=5, pady=5)
-        self.qty_entry = tk.Entry(form, width=30)
-        self.qty_entry.grid(row=1, column=1, padx=5, pady=5)
+        tk.Label(form, text="Quantity:", bg=CONTENT_BG).grid(row=1, column=0, sticky="w", pady=5)
+        self.qty_entry = tk.Entry(form, width=20)
+        self.qty_entry.grid(row=1, column=1, pady=5)
 
-        tk.Button(self, text="Add Item", bg=ACCENT, fg="white",
+        tk.Button(self, text="Add Item", width=18, bg=ACCENT, fg="white",
                   command=self.add_item).pack(pady=15)
 
     def add_item(self):
         product_id = self.product_entry.get().strip()
         qty = self.qty_entry.get().strip()
 
+        # Validate numeric input
         if not product_id.isdigit() or not qty.isdigit():
-            messagebox.showwarning("Invalid", "Product ID and Quantity must be numbers")
+            messagebox.showwarning("Invalid Input", "Product ID and Quantity must be numbers")
             return
 
-        oim = self.controller.order_item_manager
-        oim.add(self.order_id, int(product_id), int(qty))
+        product_id = int(product_id)
+        qty = int(qty)
 
-        messagebox.showinfo("Item Added", f"{qty} x Product {product_id} added to order #{self.order_id}")
+        pm = self.controller.product_manager
+        sm = self.controller.stock_manager
+        oim = self.controller.order_item_manager
+
+        # 1. Validate product exists in the database
+        product = pm.fetch_by_id(product_id)
+        if not product:
+            messagebox.showerror("Invalid Product", f"Product ID {product_id} does not exist in the database")
+            return
+
+        # 2. Check stock level
+        current_stock = sm.stock_level(product_id)
+        if current_stock < qty:
+            messagebox.showerror(
+                "Insufficient Stock",
+                f"Only {current_stock} units available for {product.product_name}"
+            )
+            return
+
+        # 3. Subtract stock
+        sm.clear_stock_for_product(product_id)
+
+        new_stock = current_stock - qty
+        location = product.stock[0].location if product.stock else "A1"
+        sm.add(product_id, new_stock, location)
+
+        # 4. Add item to order
+        oim.add(self.order_id, product_id, qty)
+
+        # 5. Low stock warning
+        if new_stock < 15:
+            messagebox.showwarning(
+                "Low Stock Alert",
+                f"{product.product_name} (SKU {product.sku}) is low on stock.\n"
+                f"Remaining quantity: {new_stock}"
+            )
+
+        messagebox.showinfo("Item Added", f"{qty} x Product {product_id} added to Order #{self.order_id}")
+
+        # Refresh Orders screen
+        parent = self.master
+        parent.load_orders()
+
         self.destroy()
+
 
 
 class CreateShipmentWindow(tk.Toplevel):
@@ -134,10 +178,36 @@ class InventoryReportWindow(tk.Toplevel):
         pm = controller.product_manager
         sm = controller.stock_manager
 
+        # ---------- STACKING LOGIC ----------
+        stacked = {}
+
         for product in pm.fetch_all():
             total_qty = sm.stock_level(product.product_id)
-            locations = ", ".join([s.location for s in product.stock])
-            table.insert("", "end", values=(product.product_name, product.sku, total_qty, locations))
+            locations = [s.location for s in product.stock]
+
+            key = (product.product_name.lower().strip(),
+                   product.sku.lower().strip())
+
+            if key not in stacked:
+                stacked[key] = {
+                    "name": product.product_name,
+                    "sku": product.sku,
+                    "quantity": total_qty,
+                    "locations": set(locations)
+                }
+            else:
+                stacked[key]["quantity"] += total_qty
+                stacked[key]["locations"].update(locations)
+
+        # ---------- INSERT STACKED ROWS ----------
+        for data in stacked.values():
+            table.insert("", "end", values=(
+                data["name"],
+                data["sku"],
+                data["quantity"],
+                ", ".join(sorted(data["locations"]))
+            ))
+
 
 
 class LowStockReportWindow(tk.Toplevel):
@@ -163,9 +233,35 @@ class LowStockReportWindow(tk.Toplevel):
 
         alerts = sm.low_stock_alert(threshold=10)
 
+        # ---------- STACKING LOGIC ----------
+        stacked = {}
+
         for alert in alerts:
             product = pm.fetch_by_id(alert["product_id"])
-            table.insert("", "end", values=(product.product_name, product.sku, alert["quantity"]))
+            if not product:
+                continue
+
+            key = (product.product_name.lower().strip(),
+                   product.sku.lower().strip())
+
+            if key not in stacked:
+                stacked[key] = {
+                    "name": product.product_name,
+                    "sku": product.sku,
+                    "quantity": alert["quantity"]
+                }
+            else:
+                stacked[key]["quantity"] += alert["quantity"]
+
+        # ---------- INSERT STACKED ROWS ----------
+        for data in stacked.values():
+            table.insert("", "end", values=(
+                data["name"],
+                data["sku"],
+                data["quantity"]
+            ))
+
+
 
 
 class SearchResultsWindow(tk.Toplevel):
@@ -348,6 +444,8 @@ class InventoryApp(tk.Tk):
             frame.load_clients()
         if hasattr(frame, "load_orders"):
             frame.load_orders()
+        if hasattr(frame, "load_shipments"):
+            frame.load_shipments()
 
         frame.tkraise()
         self.status.config(text=f"Viewing: {screen_name.replace('Screen', '')}")
@@ -403,8 +501,10 @@ class ProductsScreen(BaseScreen):
         tk.Button(btn_frame, text="Delete Product", width=15, bg="#c0392b", fg="white",
                   command=self.delete_product).grid(row=0, column=2, padx=5)
 
-        columns = ("Name", "SKU", "Quantity", "Location")
+        columns = ("ID", "Name", "SKU", "Quantity", "Location")
         self.table = ttk.Treeview(center, columns=columns, show="headings", height=10)
+        self.table.column("ID", width=0, stretch=False)
+        self.table.heading("ID", text="")
 
         for col in columns:
             self.table.heading(col, text=col)
@@ -416,20 +516,42 @@ class ProductsScreen(BaseScreen):
         self.load_products()
 
     def load_products(self):
+        # Clear table
         for row in self.table.get_children():
             self.table.delete(row)
 
         pm = self.controller.product_manager
         sm = self.controller.stock_manager
 
+        stacked = {}
+
         for product in pm.fetch_all():
             total_qty = sm.stock_level(product.product_id)
-            locations = ", ".join([s.location for s in product.stock])
+            locations = [s.location for s in product.stock]
+
+            key = (product.product_name.lower().strip(),
+                   product.sku.lower().strip())
+
+            if key not in stacked:
+                stacked[key] = {
+                    "id": product.product_id,
+                    "name": product.product_name,
+                    "sku": product.sku,
+                    "quantity": total_qty,
+                    "locations": set(locations)
+                }
+            else:
+                stacked[key]["quantity"] += total_qty
+                stacked[key]["locations"].update(locations)
+
+        # Insert stacked rows
+        for data in stacked.values():
             self.table.insert("", "end", values=(
-                product.product_name,
-                product.sku,
-                total_qty,
-                locations
+                data["id"],  # REAL ID
+                data["name"],
+                data["sku"],
+                data["quantity"],
+                ", ".join(sorted(data["locations"]))
             ))
 
     def add_product(self):
@@ -456,42 +578,25 @@ class ProductsScreen(BaseScreen):
 
     def load_selected_product(self, event):
         selected = self.table.selection()
-        if selected:
-            values = self.table.item(selected[0], "values")
-            self.clear_entries()
-            for (label, entry), value in zip(self.entries.items(), values):
-                entry.insert(0, value)
-
-    def update_product(self):
-        selected = self.table.selection()
         if not selected:
-            messagebox.showwarning("No Selection", "Select a product to update")
             return
 
-        name = self.entries["Product Name:"].get().strip()
-        sku = self.entries["SKU:"].get().strip()
-        quantity = self.entries["Quantity:"].get().strip()
-        location = self.entries["Location:"].get().strip()
+        values = self.table.item(selected[0], "values")
 
-        pm = self.controller.product_manager
-        sm = self.controller.stock_manager
-
-        # Simple approach: find product by SKU
-        product = pm.fetch_by_sku(sku)
-        if not product:
-            messagebox.showwarning("Not Found", "Product not found in database")
+        # Must be exactly 5 values
+        if len(values) != 5:
+            print("ERROR: Row does not contain 5 values:", values)
             return
-
-        pm.update(product.product_id, name, product.description, sku)
-
-        if quantity.isdigit():
-            # Clear existing stock and re-add (simple for demo)
-            sm.clear_stock_for_product(product.product_id)
-            sm.add(product.product_id, int(quantity), location or "A1")
 
         self.clear_entries()
-        self.load_products()
-        messagebox.showinfo("Updated", "Product updated successfully")
+
+        # Unpack values
+        _, name, sku, qty, loc = values
+
+        self.entries["Product Name:"].insert(0, name)
+        self.entries["SKU:"].insert(0, sku)
+        self.entries["Quantity:"].insert(0, qty)
+        self.entries["Location:"].insert(0, loc)
 
     def delete_product(self):
         selected = self.table.selection()
@@ -500,18 +605,18 @@ class ProductsScreen(BaseScreen):
             return
 
         values = self.table.item(selected[0], "values")
-        sku = values[1]
+        product_id = int(values[0])  # first column is ID
 
         pm = self.controller.product_manager
         sm = self.controller.stock_manager
 
-        product = pm.fetch_by_sku(sku)
+        product = pm.fetch_by_id(product_id)
         if not product:
             messagebox.showwarning("Not Found", "Product not found in database")
             return
 
-        sm.clear_stock_for_product(product.product_id)
-        pm.delete(product.product_id)
+        sm.clear_stock_for_product(product_id)
+        pm.delete(product_id)
 
         self.clear_entries()
         self.load_products()
@@ -521,6 +626,44 @@ class ProductsScreen(BaseScreen):
         for entry in self.entries.values():
             entry.delete(0, tk.END)
 
+    def update_product(self):
+        selected = self.table.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Select a product to update")
+            return
+
+        values = self.table.item(selected[0], "values")
+
+        # values[0] now contains ALL IDs, like "5,7,12"
+        product_ids = [int(x) for x in values[0].split(",")]
+
+        name = self.entries["Product Name:"].get().strip()
+        sku = self.entries["SKU:"].get().strip()
+        quantity = self.entries["Quantity:"].get().strip()
+        location = self.entries["Location:"].get().strip()
+
+        if not name or not sku:
+            messagebox.showwarning("Missing Info", "Product Name and SKU are required")
+            return
+
+        pm = self.controller.product_manager
+        sm = self.controller.stock_manager
+
+        # Update ALL products in the stack
+        for pid in product_ids:
+            product = pm.fetch_by_id(pid)
+            if product:
+                pm.update(pid, name, product.description, sku)
+                sm.clear_stock_for_product(pid)
+
+        # Add NEW stock to the FIRST product ID
+        if quantity.isdigit():
+            sm.add(product_ids[0], int(quantity), location or "A1")
+
+        self.clear_entries()
+        self.load_products()
+        messagebox.showinfo("Updated", "Product updated successfully")
+
 
 class ClientsScreen(BaseScreen):
     def __init__(self, parent, controller):
@@ -529,14 +672,47 @@ class ClientsScreen(BaseScreen):
         center = tk.Frame(self.content, bg=CONTENT_BG)
         center.grid(row=0, column=0)
 
-        columns = ("Client Name", "Address", "Contact Info")
+        # ---------- Form ----------
+        form_frame = tk.Frame(center, bg=CONTENT_BG)
+        form_frame.pack(pady=10)
+
+        labels = ["Client Name:", "Address:", "Contact Info:"]
+        self.entries = {}
+
+        for i, label in enumerate(labels):
+            tk.Label(form_frame, text=label, bg=CONTENT_BG, font=FONT_NORMAL)\
+                .grid(row=i, column=0, sticky="e", padx=10, pady=5)
+
+            entry = tk.Entry(form_frame, width=40)
+            entry.grid(row=i, column=1, padx=10, pady=5)
+            self.entries[label] = entry
+
+        # ---------- Buttons ----------
+        btn_frame = tk.Frame(center, bg=CONTENT_BG)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="Add Client", width=15, bg=ACCENT, fg="white",
+                  command=self.add_client).grid(row=0, column=0, padx=5)
+
+        tk.Button(btn_frame, text="Update Client", width=15, bg="#27ae60", fg="white",
+                  command=self.update_client).grid(row=0, column=1, padx=5)
+
+        tk.Button(btn_frame, text="Delete Client", width=15, bg="#c0392b", fg="white",
+                  command=self.delete_client).grid(row=0, column=2, padx=5)
+
+        # ---------- Table ----------
+        columns = ("ID", "Client Name", "Address", "Contact Info")
         self.table = ttk.Treeview(center, columns=columns, show="headings", height=12)
+
+        self.table.column("ID", width=0, stretch=False)
+        self.table.heading("ID", text="")
 
         for col in columns:
             self.table.heading(col, text=col)
             self.table.column(col, width=220, anchor="center")
 
         self.table.pack(pady=10)
+        self.table.bind("<<TreeviewSelect>>", self.load_selected_client)
 
         self.load_clients()
 
@@ -548,10 +724,75 @@ class ClientsScreen(BaseScreen):
 
         for client in cm.fetch_all():
             self.table.insert("", "end", values=(
+                client.client_id,
                 client.client_name,
                 client.client_address,
                 client.contact_info
             ))
+
+    def load_selected_client(self, event):
+        selected = self.table.selection()
+        if selected:
+            values = self.table.item(selected[0], "values")
+            self.clear_entries()
+            for (label, entry), value in zip(self.entries.items(), values[1:]):
+                entry.insert(0, value)
+
+    def add_client(self):
+        name = self.entries["Client Name:"].get().strip()
+        address = self.entries["Address:"].get().strip()
+        contact = self.entries["Contact Info:"].get().strip()
+
+        if not name:
+            messagebox.showwarning("Missing Info", "Client Name is required")
+            return
+
+        cm = self.controller.client_manager
+        cm.add(name, address, contact)
+
+        self.clear_entries()
+        self.load_clients()
+        messagebox.showinfo("Success", "Client added successfully")
+
+    def update_client(self):
+        selected = self.table.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Select a client to update")
+            return
+
+        values = self.table.item(selected[0], "values")
+        client_id = int(values[0])
+
+        name = self.entries["Client Name:"].get().strip()
+        address = self.entries["Address:"].get().strip()
+        contact = self.entries["Contact Info:"].get().strip()
+
+        cm = self.controller.client_manager
+        cm.update(client_id, name, address, contact)
+
+        self.clear_entries()
+        self.load_clients()
+        messagebox.showinfo("Updated", "Client updated successfully")
+
+    def delete_client(self):
+        selected = self.table.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Select a client to delete")
+            return
+
+        values = self.table.item(selected[0], "values")
+        client_id = int(values[0])
+
+        cm = self.controller.client_manager
+        cm.delete(client_id)
+
+        self.clear_entries()
+        self.load_clients()
+        messagebox.showinfo("Deleted", "Client deleted successfully")
+
+    def clear_entries(self):
+        for entry in self.entries.values():
+            entry.delete(0, tk.END)
 
 
 
@@ -564,6 +805,7 @@ class OrdersScreen(BaseScreen):
 
         columns = ("Order ID", "Client", "Status", "Items")
         self.table = ttk.Treeview(center, columns=columns, show="headings", height=12)
+        self.table.bind("<<TreeviewSelect>>", self.show_order_items)
 
         for col in columns:
             self.table.heading(col, text=col)
@@ -585,6 +827,8 @@ class OrdersScreen(BaseScreen):
 
         tk.Button(btn_frame, text="Create Shipment", width=18, bg="#e67e22", fg="white",
                   command=self.create_shipment_popup).grid(row=0, column=3, padx=5)
+        tk.Button(btn_frame, text="Delete Order", width=18, bg="#c0392b", fg="white",
+                  command=self.delete_order).grid(row=0, column=4, padx=5)
 
         self.load_orders()
 
@@ -643,6 +887,88 @@ class OrdersScreen(BaseScreen):
             return
         CreateShipmentWindow(self, self.controller, order_id)
 
+    def show_order_items(self, event):
+        selected = self.table.selection()
+        if not selected:
+            return
+
+        values = self.table.item(selected[0], "values")
+        order_id = int(values[0])
+
+        OrderItemsWindow(self, self.controller, order_id)
+
+    def delete_order(self):
+        order_id = self.get_selected_order_id()
+        if order_id is None:
+            return
+
+        if not messagebox.askyesno("Confirm Delete", f"Delete Order #{order_id}?"):
+            return
+
+        om = self.controller.order_manager
+        oim = self.controller.order_item_manager
+        sm = self.controller.shipment_manager
+
+        # Delete order items
+        items = oim.fetch_by_order(order_id)
+        for item in items:
+            oim.delete(item.order_item_id)
+
+        # Delete shipment if exists
+        shipment = sm.fetch_by_id(order_id)
+        if shipment:
+            sm.delete(shipment.shipment_id)
+
+        # Delete the order
+        om.delete(order_id)
+
+        self.load_orders()
+        messagebox.showinfo("Deleted", f"Order #{order_id} deleted")
+
+class OrderItemsWindow(tk.Toplevel):
+    def __init__(self, parent, controller, order_id):
+        super().__init__(parent)
+        self.controller = controller
+        self.order_id = order_id
+
+        self.title(f"Order #{order_id} Items")
+        self.geometry("600x400")
+        self.configure(bg=CONTENT_BG)
+
+        tk.Label(self, text=f"Items in Order #{order_id}",
+                 font=("Segoe UI", 16), bg=CONTENT_BG).pack(pady=10)
+
+        columns = ("Product", "SKU", "Quantity", "Location", "Remaining Stock")
+        table = ttk.Treeview(self, columns=columns, show="headings", height=12)
+
+        for col in columns:
+            table.heading(col, text=col)
+            table.column(col, width=120, anchor="center")
+
+        table.pack(pady=10, fill="both", expand=True)
+
+        pm = controller.product_manager
+        sm = controller.stock_manager
+        oim = controller.order_item_manager
+
+        items = oim.fetch_by_order(order_id)
+
+        for item in items:
+            product = pm.fetch_by_id(item.product_id)
+            if not product:
+                continue
+
+            remaining = sm.stock_level(item.product_id)
+            location = ", ".join([s.location for s in product.stock]) or "Unknown"
+
+            table.insert("", "end", values=(
+                product.product_name,
+                product.sku,
+                item.quantity,
+                location,
+                remaining
+            ))
+
 
 
 class ShipmentsScreen(BaseScreen):
@@ -661,6 +987,19 @@ class ShipmentsScreen(BaseScreen):
 
         self.table.pack(pady=10)
 
+        # ---------- Buttons ----------
+        btn_frame = tk.Frame(center, bg=CONTENT_BG)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="Mark Shipped", width=15, bg="#27ae60", fg="white",
+                  command=self.mark_shipped).grid(row=0, column=0, padx=5)
+
+        tk.Button(btn_frame, text="Mark Delivered", width=15, bg="#8e44ad", fg="white",
+                  command=self.mark_delivered).grid(row=0, column=1, padx=5)
+
+        tk.Button(btn_frame, text="Delete Shipment", width=15, bg="#c0392b", fg="white",
+                  command=self.delete_shipment).grid(row=0, column=2, padx=5)
+
         self.load_shipments()
 
     def load_shipments(self):
@@ -675,6 +1014,46 @@ class ShipmentsScreen(BaseScreen):
                 shipment.order_id,
                 shipment.shipment_status
             ))
+
+    def get_selected_shipment_id(self):
+        selected = self.table.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Select a shipment first")
+            return None
+        values = self.table.item(selected[0], "values")
+        return int(values[0])
+
+    def mark_shipped(self):
+        shipment_id = self.get_selected_shipment_id()
+        if shipment_id is None:
+            return
+        sm = self.controller.shipment_manager
+        sm.mark_as_shipped(shipment_id)
+        self.load_shipments()
+        messagebox.showinfo("Updated", f"Shipment #{shipment_id} marked as shipped")
+
+    def mark_delivered(self):
+        shipment_id = self.get_selected_shipment_id()
+        if shipment_id is None:
+            return
+        sm = self.controller.shipment_manager
+        sm.mark_as_delivered(shipment_id)
+        self.load_shipments()
+        messagebox.showinfo("Updated", f"Shipment #{shipment_id} marked as delivered")
+
+    def delete_shipment(self):
+        shipment_id = self.get_selected_shipment_id()
+        if shipment_id is None:
+            return
+
+        if not messagebox.askyesno("Confirm Delete", f"Delete Shipment #{shipment_id}?"):
+            return
+
+        sm = self.controller.shipment_manager
+        sm.delete(shipment_id)
+
+        self.load_shipments()
+        messagebox.showinfo("Deleted", f"Shipment #{shipment_id} deleted")
 
 
 class ReportsScreen(BaseScreen):

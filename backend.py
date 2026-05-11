@@ -120,6 +120,12 @@ class StockManager:
                 })
         return alerts
 
+    def clear_stock_for_product(self, product_id):
+        rows = session.query(Stock).filter_by(product_id=product_id).all()
+        for row in rows:
+            session.delete(row)
+        session.commit()
+
 
 class OrderManager:
 
@@ -249,6 +255,9 @@ class ShipmentManager:
 
     def mark_as_delivered(self, shipment_id):
         return self.update(shipment_id, 'delivered')
+
+    def fetch_by_order_id(self, order_id):
+        return session.query(Shipment).filter_by(order_id=order_id).first()
 
 
 class ShipmentItemManager:
