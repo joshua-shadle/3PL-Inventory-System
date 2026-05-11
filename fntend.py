@@ -501,10 +501,8 @@ class ProductsScreen(BaseScreen):
         tk.Button(btn_frame, text="Delete Product", width=15, bg="#c0392b", fg="white",
                   command=self.delete_product).grid(row=0, column=2, padx=5)
 
-        columns = ("ID", "Name", "SKU", "Quantity", "Location")
-        self.table = ttk.Treeview(center, columns=columns, show="headings", height=10)
-        self.table.column("ID", width=0, stretch=False)
-        self.table.heading("ID", text="")
+        columns = ("Name", "SKU", "Quantity", "Location")
+        self.table = ttk.Treeview(center, columns=columns, show="headings", height=12)
 
         for col in columns:
             self.table.heading(col, text=col)
