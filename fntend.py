@@ -501,7 +501,7 @@ class ProductsScreen(BaseScreen):
         tk.Button(btn_frame, text="Delete Product", width=15, bg="#c0392b", fg="white",
                   command=self.delete_product).grid(row=0, column=2, padx=5)
 
-        columns = ("Name", "SKU", "Quantity", "Location")
+        columns = ("ID", "Name", "SKU", "Quantity", "Location")
         self.table = ttk.Treeview(center, columns=columns, show="headings", height=12)
 
         for col in columns:
@@ -532,25 +532,34 @@ class ProductsScreen(BaseScreen):
 
             if key not in stacked:
                 stacked[key] = {
-                    "id": product.product_id,
+                    "ids": [product.product_id],
                     "name": product.product_name,
                     "sku": product.sku,
                     "quantity": total_qty,
                     "locations": set(locations)
                 }
             else:
+                stacked[key]["ids"].append(product.product_id)
                 stacked[key]["quantity"] += total_qty
                 stacked[key]["locations"].update(locations)
 
-        # Insert stacked rows
+        # Insert stacked rows (show first ID, store all IDs in tags)
         for data in stacked.values():
-            self.table.insert("", "end", values=(
-                data["id"],  # REAL ID
-                data["name"],
-                data["sku"],
-                data["quantity"],
-                ", ".join(sorted(data["locations"]))
-            ))
+            visible_id = data["ids"][0]  # show the first ID
+            all_ids = ",".join(map(str, data["ids"]))
+
+            self.table.insert(
+                "",
+                "end",
+                values=(
+                    visible_id,
+                    data["name"],
+                    data["sku"],
+                    data["quantity"],
+                    ", ".join(sorted(data["locations"]))
+                ),
+                tags=(all_ids,)
+            )
 
     def add_product(self):
         name = self.entries["Product Name:"].get().strip()
